@@ -15,35 +15,39 @@ export const config = {
   },
 
   // --------------------------------------------------------------- FASES ---
-  // 'auto':   las fases salen del MIDI. Se calcula una curva de tensión (disonancia
-  //           armónica de las notas que suenan juntas × intensidad) que sólo reacciona
-  //           DESPUÉS de que suena la disonancia (nunca se adelanta). La pieza se divide en
-  //           CALMA → DISONANCIA → CALMA donde la curva cruza `umbral`, y dentro de la
-  //           disonancia la intensidad visual sigue a la curva.
-  // 'manual': se usan los tiempos de `fases` (también es el respaldo si no hay MIDI).
-  modoFases: 'auto',
-  fasesAuto: {
-    umbral: 0.45, // 0–1: nivel de tensión que separa calma de disonancia
-    ataque: 1.5, // s: qué tan rápido sube la tensión cuando aparece una disonancia
-    relajacion: 5, // s: qué tan lento baja cuando la disonancia se resuelve
-    pisoDisonancia: 0, // 0–1: intensidad mínima durante la fase de disonancia
-  },
-  // Modo manual: cada fase empieza en `inicio` (s) y usa los parámetros de `tipo`.
+  // 'manual': las fases empiezan en los segundos de `fases` (recomendado: tú decides
+  //           dónde está la parte disonante de la pieza).
+  // 'auto':   las fases se calculan del MIDI, donde la curva de tensión cruza `umbral`.
+  // En ambos modos, si hay MIDI, dentro de la disonancia la intensidad y la rotura del
+  // rostro siguen a la música.
+  modoFases: 'manual',
+  // Cada fase empieza en `inicio` (s), usa los parámetros de `tipo` y entra en
+  // `transicion` (s; si no se indica, `duracionTransicion`).
   fases: [
     { nombre: 'CALMA', tipo: 'calma', inicio: 0 },
-    { nombre: 'DISONANCIA', tipo: 'disonancia', inicio: 20 },
-    { nombre: 'CALMA', tipo: 'calma', inicio: 40 },
+    // 43.3 s: entra el sonido fuerte disonante (Fa#, Mi♭–La)
+    { nombre: 'DISONANCIA', tipo: 'disonancia', inicio: 43.3, transicion: 1.5 },
+    // 59.8 s: vuelve Si♭ y empieza el final
+    { nombre: 'CALMA', tipo: 'calma', inicio: 59.8, transicion: 4 },
   ],
   // Duración (s) del cruce gradual entre fases. Empieza en el `inicio` de cada fase.
   duracionTransicion: 4,
-  // ROTURA DEL ROSTRO (modo auto): sigue a la disonancia de la música casi al instante.
-  // Se calcula aparte del color: el color marca la atmósfera, la forma se rompe sólo
-  // mientras suenan los pasajes disonantes.
+  fasesAuto: {
+    umbral: 0.45, // 0–1: nivel de tensión que separa calma de disonancia (modo auto)
+    ataque: 1.5, // s: qué tan rápido sube la tensión cuando aparece una disonancia
+    relajacion: 5, // s: qué tan lento baja cuando la disonancia se resuelve
+    pisoDisonancia: 0.6, // 0–1: intensidad mínima del color durante la disonancia
+  },
+  // ROTURA DEL ROSTRO: sigue a la disonancia de la música casi al instante.
+  // Dentro de la fase de disonancia el rostro se rompe con los pasajes disonantes;
+  // fuera de ella esos pasajes sólo lo hacen temblar levemente (`temblorFuera`).
   rotura: {
     ataque: 0.2, // s: qué tan rápido se rompe cuando entra la disonancia
     relajacion: 1, // s: qué tan rápido se recompone cuando se resuelve
     desde: 0.3, // 0–1: por debajo de esta tensión el rostro no se rompe nada
     hasta: 0.7, // 0–1: desde esta tensión el rostro se rompe por completo
+    temblorFuera: 1.2, // px: temblor de los pasajes tensos fuera de la disonancia
+    pisoEnDisonancia: 0.35, // 0–1: rotura mínima durante toda la fase de disonancia
   },
   // Suavizado extra por frame de los parámetros (0 = sin suavizar, 0.99 = muy lento).
   suavizadoParametros: 0.92,
@@ -52,25 +56,21 @@ export const config = {
   tipos: {
     calma: {
       paleta: ['#00ffa3', '#00c2d8', '#2f6bff', '#7af0ff'],
-      atraccion: 0.035, // fuerza del resorte hacia la cara
-      amortiguacion: 0.86, // 1 = sin fricción
+      atraccion: 0.035, // fuerza del resorte hacia la cara (fricción y vel. máx.: ver `fisica`)
       ruido: 0.12, // fuerza del campo de flujo
       velocidadRuido: 0.15, // qué tan rápido cambia el campo de flujo
       temblor: 0, // sacudida aleatoria (px/frame)
       dispersion: 0, // separa las partículas de la cara (0–1+)
-      velocidadMax: 4,
       tamano: 1.6, // px
       estela: 0.22, // 0 = estela infinita, 1 = sin estela
     },
     disonancia: {
       paleta: ['#ff6a00', '#ff2a00', '#ffb000', '#ff004c'],
       atraccion: 0.016,
-      amortiguacion: 0.9,
       ruido: 1.4,
       velocidadRuido: 0.9,
       temblor: 2.2,
       dispersion: 0.55,
-      velocidadMax: 16,
       tamano: 2.1,
       estela: 0.35,
     },
@@ -93,6 +93,71 @@ export const config = {
     opacidad: 0.55, // opacidad base (se suman con brillo aditivo)
     titileo: 0.45, // 0 = brillo constante, 1 = titilan mucho
     velocidadTitileo: 1.2, // ciclos por segundo (aprox.)
+  },
+
+  // ------------------------------------------------------------- FÍSICA ---
+  // Inspirada en el problema RESTRINGIDO de n cuerpos (ver physics.js):
+  //  - grupo ROSTRO: orbita las masas (landmarks) cercanas a su lugar en la cara
+  //  - grupo FONDO: flota con atractores libres que derivan por la pantalla
+  // En calma las órbitas son estables y la cara se lee; en la disonancia G sube, la
+  // fricción baja y aparecen perturbación y repulsión: las órbitas se vuelven caóticas.
+  // La disonancia de la física sigue a la "forma" de `phases.js` (fases + rotura + sonrisa).
+  fisica: {
+    semilla: null, // número = misma simulación cada vez · null = distinta en cada ejecución
+    pasoTiempo: 1 / 60, // s por paso fijo de integración (Euler semi-implícito)
+    maxSubpasos: 3, // pasos máximos por frame si un frame se atrasa
+
+    // Cuerpos masivos: landmarks del rostro (contorno, ojos, cejas, nariz, boca)
+    masas: {
+      cantidad: 80, // cuántos landmarks son masas (60–100)
+      masaPorLandmark: 1,
+      cuerposPorParticula: 4, // cada partícula siente sólo las K masas más cercanas a su lugar
+      softening: 14, // px: evita explosiones cuando una partícula pasa muy cerca
+      suavizado: 0.5, // 0–0.99: suavizado de la posición de las masas entre frames
+    },
+    G: { calma: 30, disonancia: 220 }, // constante gravitatoria por fase
+    volumenAG: 0.8, // volumen → G (más volumen, más gravedad)
+    friccion: { calma: 0.14, disonancia: 0.04 }, // fracción de velocidad que se pierde por paso
+    velocidadMax: { calma: 4, disonancia: 16 }, // px/paso (grupo rostro)
+    atraccionMinima: 0.02, // resorte mínimo hacia el rostro: la cara no desaparece en el caos
+    perturbacion: 1.2, // px/paso²: ruido del grupo rostro en la disonancia
+    frecuenciasAPerturbacion: 1.5, // agudos → más perturbación
+    // Repulsión parcial intermitente (sólo en la disonancia): cada `intervalo` s, una
+    // `fraccion` de las masas repele durante medio intervalo.
+    repulsion: { intensidad: 0.8, fraccion: 0.3, intervalo: 0.7 },
+    velocidadInicial: 1.5, // px/paso: velocidad tangencial aleatoria al empezar
+
+    // Atractores libres: siempre activos, mueven el fondo (y todo cuando no hay cara)
+    atractores: { cantidad: 4, velocidad: 25, G: 2500, softening: 150 },
+
+    // Grupos rostro / fondo
+    proporcionRostro: 0.45, // faceRatio: fracción de partículas que forma la cara
+    influenciaFondo: 0.05, // backgroundFaceInfluence: cuánto siente el fondo al rostro
+    caosFondo: 2, // backgroundChaosFactor: cuánto se agita el fondo en la disonancia
+    opacidadFondo: 0.6, // el fondo es más tenue que el rostro (profundidad)
+    tamanoFondo: 0.85,
+    intercambio: {
+      activar: true, // swapEnabled
+      intervaloMs: 1500, // swapIntervalMs
+      proporcion: 0.02, // swapRate: fracción de partículas que cambia de grupo cada vez
+      transicion: 2, // s que tarda una partícula en pasar de un grupo al otro
+    },
+
+    // Capa extra de caos: partículas pesadas con gravedad mutua (coste O(n·H))
+    pesadas: { activar: false, cantidad: 200, masa: 3, softening: 20 },
+
+    // Tritono: además del impulso radial (ver `tritono`), G cambia de signo un momento
+    tritono: { repulsion: 1 }, // 1 = G se invierte por completo en el pico del pulso
+
+    // Calidad adaptativa: si no alcanza los FPS, reduce masas y luego partículas
+    calidad: {
+      activar: true,
+      fpsMinimo: 50,
+      msMinimo: 6, // sólo si las partículas cuestan al menos esto (si no, el cuello es otro)
+      segundosBajo: 3, // los FPS deben estar bajos tantos segundos seguidos
+      masasMinimas: 30,
+      particulasMinimas: 1500,
+    },
   },
 
   // ------------------------------------------------------------ VIDA ---
@@ -175,6 +240,7 @@ export const config = {
     grosorOnda: 90, // px
     destello: '#ffffff', // color del destello
     intensidadDestello: 0.85, // 0–1
+    fuerzaFuera: 0.35, // 0–1: fuerza del pulso cuando el tritono suena fuera de la disonancia
     distorsion: 3.5, // temblor extra durante el pulso
   },
 

@@ -4,6 +4,7 @@
 // lleva halo suave y titileo (sprite de gradiente radial), que es lo que más se ve.
 import { CONTOUR_GROUPS, REGION, TESSELATION } from './faceTracker.js';
 import { hexToRgb } from './phases.js';
+import { Physics } from './physics.js';
 
 const TAU = Math.PI * 2;
 const COLOR_BUCKETS = 32;
@@ -72,6 +73,12 @@ export class ParticleSystem {
       this.y[i] = Math.random() * this.h;
     }
 
+    // Física (n cuerpos restringido): grupos rostro/fondo, masas, atractores
+    this.physics = new Physics(cfg, n, this.edgeA, this.w, this.h);
+    this.physics.initVelocities(this.x, this.y, this.vx, this.vy, this.w, this.h);
+    this.stepAcc = 0; // acumulador del paso fijo
+    this.msFisica = 0;
+
     this.lm = new Float32Array(NUM_LANDMARKS * 2); // landmarks proyectados a pantalla
     this.lmz = new Float32Array(NUM_LANDMARKS).fill(0.5); // profundidad normalizada (1 = cerca)
     this.faceTop = 0; // límites verticales del rostro en pantalla
@@ -103,6 +110,10 @@ export class ParticleSystem {
   resize(w, h) {
     this.w = w;
     this.h = h;
+    if (this.physics) {
+      this.physics.w = w;
+      this.physics.h = h;
+    }
   }
 
   /** Proyecta los landmarks normalizados de la cámara al espacio de pantalla. */
@@ -176,16 +187,18 @@ export class ParticleSystem {
   }
 
   /** Dispara el pulso de tritono: explosión radial + onda + destello. */
-  triggerPulse(now) {
+  /** @param k fuerza del pulso (0–1): menor fuera de la parte disonante */
+  triggerPulse(now, k = 1) {
     const c = this.cfg.tritono;
     this.pulse.active = true;
     this.pulse.start = now;
+    this.pulse.k = k;
     const { x: cx, y: cy } = this.center;
     for (let i = 0; i < this.n; i++) {
       const dx = this.x[i] - cx;
       const dy = this.y[i] - cy;
       const d = Math.sqrt(dx * dx + dy * dy) + 0.001;
-      const f = (c.intensidad * (0.4 + this.seed[i] * 0.9)) / (1 + d / 450);
+      const f = (k * c.intensidad * (0.4 + this.seed[i] * 0.9)) / (1 + d / 450);
       this.vx[i] += (dx / d) * f;
       this.vy[i] += (dy / d) * f;
     }
@@ -201,9 +214,12 @@ export class ParticleSystem {
    * @param breath  escala de respiración del rostro (≈1)
    */
   update(params, audio, hasFace, now, dt, expr, breath = 1) {
+    const tStart = performance.now();
     const cfg = this.cfg;
     const R = cfg.reactividad;
     const free = cfg.particulas.libre;
+    const F = cfg.fisica;
+    const ph = this.physics;
 
     // Atracción a la cara: aparece/desaparece suavemente
     const fk = 1 - Math.pow(1 - cfg.particulas.suavizadoCara, dt);
@@ -223,8 +239,9 @@ export class ParticleSystem {
       const el = now - this.pulse.start;
       if (el >= P.duracion) this.pulse.active = false;
       else {
-        env = Math.pow(1 - el / P.duracion, 2);
-        flash = Math.pow(1 - el / P.duracion, 6); // el destello decae más rápido
+        const k = this.pulse.k ?? 1;
+        env = k * Math.pow(1 - el / P.duracion, 2);
+        flash = k * Math.pow(1 - el / P.duracion, 6); // el destello decae más rápido
         ringR = el * P.velocidadOnda;
       }
     }
@@ -233,6 +250,10 @@ export class ParticleSystem {
     this.pulse.ringR = ringR;
     this.pulse.cx = this.center.x;
     this.pulse.cy = this.center.y;
+
+    // Física por frame: G, fricción, masas, atractores, intercambio de grupos.
+    // La disonancia física sigue a la "forma" (fases + rotura + sonrisa que sostiene).
+    ph.updateFrame(this.lm, hasFace, fw, now, params.disForma, params.dis, audio, env, dt);
 
     // Destellos de notas activos
     const N = cfg.notas;
@@ -248,16 +269,16 @@ export class ParticleSystem {
     const span = bottom - top || 1;
     const vib = N.vibracion;
 
-    // Parámetros efectivos (fase × audio × cara/libre)
+    // Parámetros efectivos (fase × audio). Cada partícula los mezcla entre "fondo"
+    // y "rostro" según su peso wi = (grupo) × (cara detectada).
     const vol = audio.volume;
     const energy = 1 + vol * R.volumenAVelocidad;
-    const lerp = (a, b, t) => a + (b - a) * t;
-    const freeBoost = 1 + params.disForma * 2;
-    const attr = params.atraccion * fw;
-    const damp = Math.pow(lerp(free.amortiguacion, params.amortiguacion, fw), dt);
-    const noiseF = lerp(free.ruido * freeBoost, params.ruido, fw) * energy;
-    const vmax = lerp(free.velocidadMax * freeBoost, params.velocidadMax, fw) * energy;
-    const jitter = (params.temblor * fw + env * P.distorsion) * Math.sqrt(dt);
+    const bgBoost = 1 + params.dis * F.caosFondo; // el fondo también se agita
+    const attrBase = Math.max(params.atraccion, F.atraccionMinima);
+    const freeRet = free.amortiguacion;
+    const faceRet = ph.retention;
+    const freeNoise = free.ruido * bgBoost;
+    const freeVmax = free.velocidadMax * bgBoost;
     const disp = params.dispersion + audio.treble * R.agudosADispersion * params.disForma;
     const distortScale = (1 + env * 0.25) * breath;
     // Expresiones: ojos y boca reflejan al espectador
@@ -266,123 +287,156 @@ export class ParticleSystem {
     const eyeR = 1 - expr.blinkR * E.parpadeo.cierre;
     const mouthW = 1 + expr.smile * E.boca.anchoSonrisa;
     const mouthH = 1 + expr.jaw * E.boca.apertura;
-    const attrRasgos = attr * E.atraccionRasgos;
     // "Sonrisa forzada": la boca tiembla si sonríes durante la disonancia
-    const mouthJitter = expr.smile * params.dis * E.sonrisa.temblorBoca * fw * Math.sqrt(dt);
+    const mouthJitter = expr.smile * params.dis * E.sonrisa.temblorBoca;
     const RC = this.regionCenter;
     this.flowTime += params.velocidadRuido * energy * dt * 0.016;
     const ft = this.flowTime;
 
     const { x, y, vx, vy, lm, lmz, edgeA, edgeB, u, ox, oy, seed, region, depth, lit } = this;
+    const faceInf = ph.faceInf;
     const cx = this.center.x;
     const cy = this.center.y;
     const w = this.w;
     const h = this.h;
     const ringW = P.grosorOnda;
     const ringF = P.intensidad * 0.12 * env;
+    const nAct = ph.nActive;
 
-    for (let i = 0; i < this.n; i++) {
-      let ax = 0;
-      let ay = 0;
-      const px = x[i];
-      const py = y[i];
-      const s = seed[i];
-
-      // Brillo por notas: franja según la altura (graves abajo, agudos arriba)
-      let li = 0;
-      if (active.length) {
-        const hy = (bottom - py) / span;
-        for (let k = 0; k < active.length; k++) {
-          const dh = hy - active[k].h;
-          li += active[k].a * Math.exp(-dh * dh * inv2w);
-        }
-        if (li > 0.02 && vib > 0) {
-          ax += (Math.random() - 0.5) * li * vib * 2;
-          ay += (Math.random() - 0.5) * li * vib * 2;
-        }
-      }
-      lit[i] = li;
-
-      if (attr > 0) {
-        const a = edgeA[i] * 2;
-        const b = edgeB[i] * 2;
-        const t = u[i];
-        depth[i] = lmz[edgeA[i]] + (lmz[edgeB[i]] - lmz[edgeA[i]]) * t;
-        let tx = lm[a] + (lm[b] - lm[a]) * t + ox[i];
-        let ty = lm[a + 1] + (lm[b + 1] - lm[a + 1]) * t + oy[i];
-        const r = region[i];
-        if (r === REGION.OJO_IZQ) {
-          ty = RC[r].y + (ty - RC[r].y) * eyeL; // parpadeo
-        } else if (r === REGION.OJO_DER) {
-          ty = RC[r].y + (ty - RC[r].y) * eyeR;
-        } else if (r === REGION.BOCA) {
-          tx = RC[r].x + (tx - RC[r].x) * mouthW; // sonrisa
-          ty = RC[r].y + (ty - RC[r].y) * mouthH; // boca abierta
-        }
-        // Dispersión: empuja el objetivo hacia afuera del centro del rostro
-        // (también aplica la respiración y la distorsión del pulso)
-        const k = distortScale * (1 + disp * (0.3 + s * 1.4));
-        tx = cx + (tx - cx) * k + ox[i] * disp * 25;
-        ty = cy + (ty - cy) * k + oy[i] * disp * 25;
-        const at = r === REGION.NINGUNA ? attr : attrRasgos;
-        ax += (tx - px) * at;
-        ay += (ty - py) * at;
-        if (r === REGION.BOCA && mouthJitter > 0) {
-          ax += (Math.random() - 0.5) * 2 * mouthJitter;
-          ay += (Math.random() - 0.5) * 2 * mouthJitter;
-        }
-      }
-
-      // Campo de flujo (ruido barato con senos)
-      const ang =
-        (Math.sin(px * 0.0031 + ft * 1.3 + s * 2.0) +
-          Math.sin(py * 0.0037 - ft * 0.9) +
-          Math.sin((px + py) * 0.0017 + ft * 0.5)) * Math.PI;
-      ax += Math.cos(ang) * noiseF;
-      ay += Math.sin(ang) * noiseF;
-
-      if (jitter > 0) {
-        ax += (Math.random() - 0.5) * 2 * jitter;
-        ay += (Math.random() - 0.5) * 2 * jitter;
-      }
-
-      // Onda expansiva del tritono
-      if (ringR >= 0) {
-        const dx = px - cx;
-        const dy = py - cy;
-        const d = Math.sqrt(dx * dx + dy * dy) + 0.001;
-        const off = Math.abs(d - ringR);
-        if (off < ringW) {
-          const f = ringF * (1 - off / ringW);
-          ax += (dx / d) * f;
-          ay += (dy / d) * f;
-        }
-      }
-
-      let nvx = vx[i] * damp + ax * dt;
-      let nvy = vy[i] * damp + ay * dt;
-      const sp = Math.sqrt(nvx * nvx + nvy * nvy);
-      // Permite superar vmax justo tras la explosión (env alto)
-      const lim = vmax + env * P.intensidad * 1.5;
-      if (sp > lim) {
-        nvx = (nvx / sp) * lim;
-        nvy = (nvy / sp) * lim;
-      }
-      vx[i] = nvx;
-      vy[i] = nvy;
-      let nx = px + nvx * dt;
-      let ny = py + nvy * dt;
-      // Sin cara: si sale de la pantalla reaparece en un punto al azar
-      // (envolver los bordes atrapaba partículas en la costura del campo de flujo)
-      if (fw < 0.5 && (nx < 0 || nx > w || ny < 0 || ny > h)) {
-        nx = Math.random() * w;
-        ny = Math.random() * h;
-        vx[i] *= 0.2;
-        vy[i] *= 0.2;
-      }
-      x[i] = nx;
-      y[i] = ny;
+    // Paso de tiempo fijo: tantos pasos como corresponda al tiempo real (con tope)
+    const hStep = F.pasoTiempo * 60; // en "frames de 60 fps"
+    this.stepAcc += dt / hStep;
+    let steps = Math.floor(this.stepAcc);
+    this.stepAcc -= steps;
+    if (steps > F.maxSubpasos) {
+      steps = F.maxSubpasos;
+      this.stepAcc = 0;
     }
+    const retCalc = (ret) => Math.pow(ret, hStep);
+
+    for (let st = 0; st < steps; st++) {
+      const last = st === steps - 1;
+      ph.updateHeavy(x, y);
+
+      for (let i = 0; i < nAct; i++) {
+        let ax = 0;
+        let ay = 0;
+        const px = x[i];
+        const py = y[i];
+        const s = seed[i];
+        const wi = fw * faceInf[i]; // peso "rostro" de esta partícula
+
+        // Brillo por notas (una vez por frame): franja según la altura
+        if (last) {
+          let li = 0;
+          if (active.length) {
+            const hy = (bottom - py) / span;
+            for (let k = 0; k < active.length; k++) {
+              const dh = hy - active[k].h;
+              li += active[k].a * Math.exp(-dh * dh * inv2w);
+            }
+            if (li > 0.02 && vib > 0) {
+              ax += (Math.random() - 0.5) * li * vib * 2;
+              ay += (Math.random() - 0.5) * li * vib * 2;
+            }
+          }
+          lit[i] = li;
+        }
+
+        // Resorte hacia su lugar en el rostro (sólo grupo rostro; nunca menor que la
+        // atracción mínima, para que la cara no desaparezca en el pico de caos)
+        if (wi > 0.001) {
+          const a = edgeA[i] * 2;
+          const b = edgeB[i] * 2;
+          const t = u[i];
+          depth[i] = lmz[edgeA[i]] + (lmz[edgeB[i]] - lmz[edgeA[i]]) * t;
+          let tx = lm[a] + (lm[b] - lm[a]) * t + ox[i];
+          let ty = lm[a + 1] + (lm[b + 1] - lm[a + 1]) * t + oy[i];
+          const r = region[i];
+          if (r === REGION.OJO_IZQ) {
+            ty = RC[r].y + (ty - RC[r].y) * eyeL; // parpadeo
+          } else if (r === REGION.OJO_DER) {
+            ty = RC[r].y + (ty - RC[r].y) * eyeR;
+          } else if (r === REGION.BOCA) {
+            tx = RC[r].x + (tx - RC[r].x) * mouthW; // sonrisa
+            ty = RC[r].y + (ty - RC[r].y) * mouthH; // boca abierta
+          }
+          // Dispersión: empuja el objetivo hacia afuera del centro del rostro
+          // (también aplica la respiración y la distorsión del pulso)
+          const k = distortScale * (1 + disp * (0.3 + s * 1.4));
+          tx = cx + (tx - cx) * k + ox[i] * disp * 25;
+          ty = cy + (ty - cy) * k + oy[i] * disp * 25;
+          const at = attrBase * wi * (r === REGION.NINGUNA ? 1 : E.atraccionRasgos);
+          ax += (tx - px) * at;
+          ay += (ty - py) * at;
+          if (r === REGION.BOCA && mouthJitter > 0) {
+            const mj = mouthJitter * wi;
+            ax += (Math.random() - 0.5) * 2 * mj;
+            ay += (Math.random() - 0.5) * 2 * mj;
+          }
+        }
+
+        // Gravedad: masas del rostro, atractores libres, pesadas
+        ph.accel(i, px, py, wi, cx, cy, x, y);
+        ax += ph.gx;
+        ay += ph.gy;
+
+        // Campo de flujo (ruido barato con senos): fuerte en el fondo, débil en el rostro
+        const noiseF = (freeNoise + (params.ruido - freeNoise) * wi) * energy;
+        const ang =
+          (Math.sin(px * 0.0031 + ft * 1.3 + s * 2.0) +
+            Math.sin(py * 0.0037 - ft * 0.9) +
+            Math.sin((px + py) * 0.0017 + ft * 0.5)) * Math.PI;
+        ax += Math.cos(ang) * noiseF;
+        ay += Math.sin(ang) * noiseF;
+
+        // Temblor + perturbación de la disonancia + distorsión del pulso
+        const jitter = (params.temblor + ph.perturb) * wi + env * P.distorsion;
+        if (jitter > 0) {
+          ax += (Math.random() - 0.5) * 2 * jitter;
+          ay += (Math.random() - 0.5) * 2 * jitter;
+        }
+
+        // Onda expansiva del tritono
+        if (ringR >= 0) {
+          const dx = px - cx;
+          const dy = py - cy;
+          const d = Math.sqrt(dx * dx + dy * dy) + 0.001;
+          const off = Math.abs(d - ringR);
+          if (off < ringW) {
+            const f = ringF * (1 - off / ringW);
+            ax += (dx / d) * f;
+            ay += (dy / d) * f;
+          }
+        }
+
+        // Euler semi-implícito: v ← v·retención + a·h ; x ← x + v·h
+        const ret = retCalc(freeRet + (faceRet - freeRet) * wi);
+        let nvx = vx[i] * ret + ax * hStep;
+        let nvy = vy[i] * ret + ay * hStep;
+        const sp = Math.sqrt(nvx * nvx + nvy * nvy);
+        // Permite superar la velocidad máxima justo tras la explosión (env alto)
+        const lim = (freeVmax + (ph.vmax - freeVmax) * wi) * energy + env * P.intensidad * 1.5;
+        if (sp > lim) {
+          nvx = (nvx / sp) * lim;
+          nvy = (nvy / sp) * lim;
+        }
+        vx[i] = nvx;
+        vy[i] = nvy;
+        let nx = px + nvx * hStep;
+        let ny = py + nvy * hStep;
+        // Fondo: si sale de la pantalla reaparece en un punto al azar
+        if (wi < 0.5 && (nx < 0 || nx > w || ny < 0 || ny > h)) {
+          nx = Math.random() * w;
+          ny = Math.random() * h;
+          vx[i] *= 0.2;
+          vy[i] *= 0.2;
+        }
+        x[i] = nx;
+        y[i] = ny;
+      }
+    }
+    this.msFisica = this.msFisica * 0.9 + (performance.now() - tStart) * 0.1;
   }
 
   /** Redibuja el sprite (punto + halo) de un color. */
@@ -440,8 +494,9 @@ export class ParticleSystem {
     }
 
     // Agrupar partículas por color (counting sort)
+    const nAct = this.physics.nActive;
     const counts = new Uint32Array(COLOR_BUCKETS + 1);
-    for (let i = 0; i < this.n; i++) {
+    for (let i = 0; i < nAct; i++) {
       let t = this.colorT[i] + shift;
       t -= Math.floor(t);
       const b = Math.min(COLOR_BUCKETS - 1, (t * COLOR_BUCKETS) | 0);
@@ -450,7 +505,7 @@ export class ParticleSystem {
     }
     for (let b = 0; b < COLOR_BUCKETS; b++) counts[b + 1] += counts[b];
     const starts = counts.slice();
-    for (let i = 0; i < this.n; i++) this.order[starts[this.bucket[i]]++] = i;
+    for (let i = 0; i < nAct; i++) this.order[starts[this.bucket[i]]++] = i;
 
     const size =
       params.tamano *
@@ -461,23 +516,32 @@ export class ParticleSystem {
     const twSpeed = PA.velocidadTitileo * TAU * now;
     // Profundidad: más grandes las partículas cercanas a la cámara
     const prof = this.cfg.profundidad.intensidad * this.faceWeight;
-    const depthSize = (i) => 1 + prof * (2 * this.depth[i] - 1);
+    const F = this.cfg.fisica;
+    const faceInf = this.physics.faceInf;
+    // El fondo es más chico y tenue que el rostro (sólo cuando hay cara)
+    const fwc = this.faceWeight;
+    const isFace = (i) => faceInf[i] * fwc > 0.5;
+    const depthSize = (i) =>
+      isFace(i) ? 1 + prof * faceInf[i] * (2 * this.depth[i] - 1) : 1 - (1 - F.tamanoFondo) * fwc;
+    const bgAlpha = 1 - (1 - F.opacidadFondo) * fwc;
     ctx.globalCompositeOperation = 'lighter';
     for (let b = 0; b < COLOR_BUCKETS; b++) {
       const from = counts[b];
       const to = counts[b + 1];
       if (from === to) continue;
-      // Puntos simples (en un solo trazo por color)
-      ctx.globalAlpha = Math.min(1, PA.opacidad * 1.4);
+      // Puntos simples (un trazo por color y por grupo: rostro / fondo)
       ctx.fillStyle = this.bucketColors[b];
-      ctx.beginPath();
-      for (let k = from; k < to; k++) {
-        const i = this.order[k];
-        if (this.halo[i]) continue;
-        const d = size * this.sizeMul[i] * depthSize(i);
-        ctx.rect(this.x[i] - d / 2, this.y[i] - d / 2, d, d);
+      for (let g = 0; g < 2; g++) {
+        ctx.globalAlpha = Math.min(1, PA.opacidad * 1.4) * (g ? 1 : bgAlpha);
+        ctx.beginPath();
+        for (let k = from; k < to; k++) {
+          const i = this.order[k];
+          if (this.halo[i] || isFace(i) !== (g === 1)) continue;
+          const d = size * this.sizeMul[i] * depthSize(i);
+          ctx.rect(this.x[i] - d / 2, this.y[i] - d / 2, d, d);
+        }
+        ctx.fill();
       }
-      ctx.fill();
       // Partículas con halo y titileo
       const sprite = this.sprites[b];
       for (let k = from; k < to; k++) {
@@ -485,7 +549,9 @@ export class ParticleSystem {
         if (!this.halo[i]) continue;
         const d = size * this.sizeMul[i] * PA.halo * depthSize(i);
         ctx.globalAlpha =
-          PA.opacidad * (1 - tw + tw * Math.sin(twSpeed * this.twinkleRate[i] + this.seed[i] * TAU));
+          PA.opacidad *
+          (isFace(i) ? 1 : bgAlpha) *
+          (1 - tw + tw * Math.sin(twSpeed * this.twinkleRate[i] + this.seed[i] * TAU));
         ctx.drawImage(sprite, this.x[i] - d / 2, this.y[i] - d / 2, d, d);
       }
       // Destellos de notas: las partículas iluminadas ganan un halo brillante

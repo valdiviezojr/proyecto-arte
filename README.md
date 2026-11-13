@@ -36,22 +36,24 @@ Audio de prueba (60 s): `npm run generar-audio-prueba` genera `public/audio/piez
 
 ## Fases (calma → disonancia → calma)
 
-Con `modoFases: 'auto'` (por defecto) las fases **se leen del MIDI**: se calcula una curva
-de tensión (qué tan disonantes son los intervalos que suenan juntos, ponderado por la
-intensidad). La curva sólo reacciona **después** de que suena la disonancia, nunca antes.
-La disonancia va desde que la curva supera `fasesAuto.umbral` hasta que vuelve a bajar,
-y dentro de ella la intensidad visual sube y baja con la música.
-Con la pieza actual: calma 0–14.5 s, disonancia 14.5–64.5 s, calma 64.5–79 s (se ve en el debug).
+Los tiempos de las fases se fijan en `fases` de `src/config.js` (`modoFases: 'manual'`).
+Con la pieza actual:
 
-El **color** sigue la curva lenta (la atmósfera de la sección). La **forma** sigue una curva
-rápida (`rotura`): el rostro se rompe mientras suenan los pasajes disonantes y se recompone
-~1 s después de que se resuelven.
+| Tiempo | Fase | Qué pasa |
+|---|---|---|
+| 0–43.3 s | CALMA | colores fríos; los pasajes tensos sólo hacen **temblar** el rostro |
+| 43.3–59.8 s | DISONANCIA | entra el sonido fuerte: rojo en ~1.5 s, rostro inestable que se **rompe** en los picos |
+| 59.8–79 s | CALMA | vuelve Si♭: el rostro se recompone y regresan los colores fríos |
 
-- El rostro se rompe demasiado / muy poco: sube / baja `rotura.desde` y `rotura.hasta`.
-- Se rompe tarde / se recompone muy lento: baja `rotura.ataque` / `rotura.relajacion`.
-- El color cambia muy rápido / muy lento: sube / baja `fasesAuto.ataque` y `fasesAuto.relajacion`.
-- Disonancia más corta / más larga: sube / baja `fasesAuto.umbral`.
-- Para fijar los tiempos a mano: `modoFases: 'manual'` y edita `fases`.
+Para mover la parte disonante cambia `inicio` de la fase (y `transicion`, lo que tarda en
+entrar). Dentro de la disonancia, la intensidad del color y la rotura siguen al MIDI:
+
+- El rostro se rompe demasiado / muy poco en los picos: sube / baja `rotura.desde` y `rotura.hasta`.
+- Qué tan inestable está durante toda la disonancia: `rotura.pisoEnDisonancia`.
+- Cuánto tiemblan los pasajes tensos antes: `rotura.temblorFuera`.
+- Fuerza de los tritonos fuera de la disonancia: `tritono.fuerzaFuera`.
+- `modoFases: 'auto'` calcula las fases del MIDI por disonancia armónica (con esta pieza
+  empezaría a los 14.5 s, demasiado pronto).
 
 ## Interacción: el rostro reacciona a quien lo mira
 
@@ -67,6 +69,26 @@ rápida (`rotura`): el rostro se rompe mientras suenan los pasajes disonantes y 
 Ajustes en `expresiones` y `respiracion` de `src/config.js`. Los más útiles:
 `sonrisa.sostenerForma` (cuánto sostiene la sonrisa), `sonrisa.minimo`/`maximo` (calibrar
 qué cuenta como sonrisa; mira el valor "sonrisa" en el debug), `respiracion.amplitud`.
+
+## Física (n cuerpos restringido)
+
+Las partículas se mueven por gravedad (`src/physics.js`, ajustes en `fisica` de `config.js`):
+
+- **Grupo rostro** (`proporcionRostro`, 45 %): orbita las masas del rostro (80 landmarks).
+  Cada partícula siente sólo las 4 masas más cercanas a su lugar, así orbita su rasgo y
+  la cara no colapsa al centro. Un resorte mínimo (`atraccionMinima`) la mantiene legible.
+- **Grupo fondo** (resto): flota con atractores libres que derivan por la pantalla, como
+  sin cámara. Cada 1.5 s un 2 % de partículas cambia de grupo de forma gradual.
+- **Calma**: G baja y fricción alta → órbitas estables. **Disonancia**: G sube, fricción baja,
+  perturbación y repulsión intermitente → caos. **Tritono**: impulso radial + G invertida
+  un instante. La física sigue a la misma "forma" que las fases (43 s, rotura, sonrisa).
+- `semilla: null` → cada ejecución es distinta; pon un número para repetir la misma.
+- Calidad adaptativa: si los FPS se mantienen bajo `calidad.fpsMinimo` 3 s, reduce masas
+  o partículas (lo que más cueste) y lo avisa en el debug.
+
+Qué ajustar primero: `G.disonancia` (cuánto caos), `friccion.disonancia` (más baja = órbitas
+más largas), `atraccionMinima` (qué tan legible queda la cara en el pico) y
+`proporcionRostro` (cuántas partículas forman la cara).
 
 ## Vida
 
@@ -110,6 +132,7 @@ src/
   phases.js         fases e interpolación de parámetros
   particles.js      física y dibujo de partículas (p5.js)
   ambient.js        polvo de fondo
+  physics.js        gravedad: masas del rostro, atractores, grupos, calidad adaptativa
 scripts/
   setup-mediapipe.mjs      copia WASM + descarga modelo (postinstall)
   generate-test-audio.mjs  audio/MIDI de prueba

@@ -150,7 +150,9 @@ function sketch(p) {
     const params = state.phases.update(t, sostener);
     const breath = updateBreath(params, dt);
     for (const _ of state.scheduler.update(t)) {
-      state.particles.triggerPulse(now);
+      // Fuera de la parte disonante el pulso es suave; dentro, completo
+      const T = config.tritono;
+      state.particles.triggerPulse(now, T.fuerzaFuera + (1 - T.fuerzaFuera) * state.phases.phaseMix);
       state.tritonesDisparados++;
     }
     for (const note of state.noteScheduler.update(t)) state.particles.addNote(note, now);
@@ -162,6 +164,8 @@ function sketch(p) {
     state.msParticulas = state.msParticulas * 0.9 + (performance.now() - t0) * 0.1;
 
     state.fps = state.fps * 0.9 + (1000 / Math.max(1, p.deltaTime)) * 0.1;
+    // Calidad adaptativa: si no alcanza los FPS, la física reduce masas/partículas
+    state.particles.physics.adapt(state.fps, state.msParticulas, state.particles.msFisica, now, state.particles.lm);
     if (state.debug) renderDebug(t, audio);
   };
 }
@@ -203,6 +207,18 @@ function updateHint(hasFace) {
   hintEl.classList.toggle('hidden', !text);
 }
 
+function physicsDebug() {
+  const ph = state.particles.physics;
+  const q = ph.quality;
+  return [
+    `física      G ${ph.G.toFixed(1)}${ph.gScale < 0.99 ? ` (×${ph.gScale.toFixed(2)} tritono)` : ''}  ·  fricción ${ph.friction.toFixed(3)}  ·  semilla ${ph.seed}`,
+    `masas       ${ph.mActive}/${ph.massIdx.length} activas  ·  ${ph.K} por partícula  ·  pesadas ${ph.heavyIdx.length}`,
+    `intercambio ${ph.swaps} partículas cambiaron de grupo`,
+    `física ms   ${state.particles.msFisica.toFixed(1)} ms/frame (dibujo incluido: ${state.msParticulas.toFixed(1)})`,
+    `calidad     ${q.reduced ? `ADAPTATIVA ACTIVADA (${q.note})` : 'completa'}`,
+  ];
+}
+
 function renderDebug(t, audio) {
   const next = state.scheduler.next;
   const lines = [
@@ -215,7 +231,8 @@ function renderDebug(t, audio) {
     `caras       ${state.tracker ? state.tracker.numFaces : 'sin cámara'}`,
     `expresión   sonrisa ${state.expr.smile.toFixed(2)}  parpadeo ${state.expr.blinkL.toFixed(2)}/${state.expr.blinkR.toFixed(2)}  boca ${state.expr.jaw.toFixed(2)}`,
     `respiración ${state.cues.tempo ? `${state.cues.tempo.toFixed(1)} bpm · cada ${config.respiracion.compases} compases` : `${config.respiracion.segundosRespaldo} s`}`,
-    `partículas  ${state.particles.n}`,
+    `partículas  ${state.particles.physics.nActive}/${state.particles.n}  ·  rostro ${state.particles.physics.nFace}  fondo ${state.particles.physics.nActive - state.particles.physics.nFace}`,
+    ...physicsDebug(),
     `tritonos    ${state.cues.events.length} (fuente: ${state.cues.source}) · disparados ${state.tritonesDisparados}`,
     `próximo     ${next ? next.t.toFixed(2) + ' s' : '—'}`,
     `volumen     ${audio.volume.toFixed(2)}  centroide ${audio.centroid.toFixed(2)}  agudos ${audio.treble.toFixed(2)}`,

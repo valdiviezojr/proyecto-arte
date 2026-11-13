@@ -18,7 +18,8 @@ const hexToRgb = (hex) => {
 };
 
 // Parámetros que deforman el rostro
-const SHAPE_KEYS = ['atraccion', 'amortiguacion', 'ruido', 'temblor', 'dispersion', 'velocidadMax'];
+// (la fricción y la velocidad máxima viven en `config.fisica`)
+const SHAPE_KEYS = ['atraccion', 'ruido', 'temblor', 'dispersion'];
 // Parámetros de "atmósfera"
 const LOOK_KEYS = ['velocidadRuido', 'tamano', 'estela'];
 const NUMERIC_KEYS = [...SHAPE_KEYS, ...LOOK_KEYS];
@@ -38,14 +39,18 @@ export class Phases {
     this.tension = null; // curva del MIDI (modo auto)
     this.tensionActual = 0;
     this.modo = 'manual';
+    this.phaseMix = 0;
+    this.tensionFuera = 0;
   }
 
   /**
-   * Modo auto: la fase de disonancia va desde el primer hasta el último momento
+   * Guarda las curvas del MIDI (intensidad y rotura, en cualquier modo).
+   * Modo auto: además, la fase de disonancia va desde el primer hasta el último momento
    * en que la curva de tensión supera el umbral.
    * Devuelve un aviso (string) si no se pudo usar el modo auto.
    */
   setTension(tension) {
+    if (tension) this.tension = tension;
     if (this.cfg.modoFases !== 'auto') return null;
     if (!tension) return 'Fases en modo manual: no hay MIDI válido para calcularlas.';
     const { umbral } = this.cfg.fasesAuto;
@@ -77,14 +82,15 @@ export class Phases {
   amount(t) {
     // Mezcla por fases: cada cruce EMPIEZA en el `inicio` de la fase y dura
     // `duracionTransicion` (nunca se adelanta a la música).
-    const T = Math.max(0.001, this.cfg.duracionTransicion);
     const val = (f) => (f.tipo === 'disonancia' ? 1 : 0);
     let mix = val(this.fases[0]);
     for (let i = 1; i < this.fases.length; i++) {
+      const T = Math.max(0.001, this.fases[i].transicion ?? this.cfg.duracionTransicion);
       const w = smoothstep((t - this.fases[i].inicio) / T);
       if (w <= 0) break;
       mix += (val(this.fases[i]) - mix) * w;
     }
+    this.phaseMix = mix; // sólo por fases, sin la intensidad de la música
     // Modo auto: dentro de la disonancia, la intensidad sigue a la música
     if (this.tension) {
       const { pisoDisonancia } = this.cfg.fasesAuto;
@@ -95,12 +101,20 @@ export class Phases {
     return mix;
   }
 
-  /** Cuánto se rompe el rostro (0–1) en el tiempo t. */
+  /**
+   * Cuánto se rompe el rostro (0–1) en el tiempo t: sigue a los pasajes disonantes,
+   * pero sólo dentro de la fase de disonancia. Fuera de ella, `this.tensionFuera`
+   * guarda cuánto deberían temblar.
+   */
   shapeAmount(t, d) {
-    if (!this.tension) return d; // modo manual: sigue a las fases
+    this.tensionFuera = 0;
+    if (!this.tension) return d; // sin MIDI: sigue a las fases
     const { desde, hasta } = this.cfg.rotura;
     const v = sampleCurve(this.tension.forma, this.tension.step, t);
-    return smoothstep((v - desde) / Math.max(0.001, hasta - desde));
+    const tense = smoothstep((v - desde) / Math.max(0.001, hasta - desde));
+    this.tensionFuera = tense * (1 - this.phaseMix);
+    const piso = this.cfg.rotura.pisoEnDisonancia ?? 0;
+    return (piso + (1 - piso) * tense) * this.phaseMix;
   }
 
   /**
@@ -114,6 +128,8 @@ export class Phases {
     const { calma, disonancia } = this;
     const p = { dis: d, disForma: dForma, paleta: [] };
     for (const k of SHAPE_KEYS) p[k] = calma[k] + (disonancia[k] - calma[k]) * dForma;
+    // Pasajes tensos fuera de la disonancia: sólo un temblor leve
+    p.temblor += this.tensionFuera * this.cfg.rotura.temblorFuera * (1 - sostener);
     for (const k of LOOK_KEYS) p[k] = calma[k] + (disonancia[k] - calma[k]) * d;
     for (let c = 0; c < this.paletteSize; c++) {
       const a = calma.paleta[c % calma.paleta.length];
