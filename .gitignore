@@ -1,0 +1,12 @@
+# Dependencias (se instalan con npm install)
+node_modules/
+
+# Build
+dist/
+
+# Copiado desde node_modules por scripts/setup-mediapipe.mjs al hacer npm install
+public/mediapipe/
+
+# Sistema / editor
+.DS_Store
+*.log

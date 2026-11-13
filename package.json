@@ -1,0 +1,21 @@
+{
+  "name": "sonrisa-en-tritono",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/setup-mediapipe.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "generar-audio-prueba": "node scripts/generate-test-audio.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.2.3",
+    "@tonejs/midi": "^2.0.28",
+    "p5": "^2.4.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.8"
+  }
+}

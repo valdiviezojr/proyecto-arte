@@ -1,0 +1,118 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  color: #ddd;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+#stage canvas {
+  display: block;
+}
+
+#start {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: #000;
+  z-index: 10;
+}
+
+#start-btn {
+  font: inherit;
+  font-size: 1.1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #eee;
+  background: transparent;
+  border: 1px solid #555;
+  padding: 0.9rem 2.4rem;
+  cursor: pointer;
+  transition: border-color 0.3s, color 0.3s;
+}
+
+#start-btn:hover,
+#start-btn:focus-visible {
+  border-color: #eee;
+  color: #fff;
+  outline: none;
+}
+
+#start-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#start-status {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.85rem;
+  color: #888;
+}
+
+#hint {
+  position: fixed;
+  bottom: 6vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 0.9rem;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.45);
+  transition: opacity 1s;
+  pointer-events: none;
+}
+
+#messages {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: min(90vw, 640px);
+  z-index: 20;
+  pointer-events: none;
+}
+
+#messages .msg {
+  background: rgba(40, 0, 0, 0.8);
+  border: 1px solid #a33;
+  color: #fcc;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+#debug {
+  position: fixed;
+  top: 0.6rem;
+  left: 0.6rem;
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  background: rgba(0, 0, 0, 0.7);
+  border: 1px solid #333;
+  font: 12px/1.45 ui-monospace, Menlo, monospace;
+  color: #9f9;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+#debug.hidden {
+  display: none;
+}
