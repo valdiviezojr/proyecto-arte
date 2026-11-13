@@ -80,11 +80,13 @@ function normalize(arr) {
 }
 
 /**
- * Curva de tensión de la pieza (0–1), muestreada cada 0.1 s:
- * rugosidad media de los intervalos que suenan juntos × (0.5 + 0.5·intensidad),
- * pasada por una envolvente causal. Devuelve { step, curva }.
+ * Curvas de tensión de la pieza (0–1), muestreadas cada 0.1 s, a partir de la
+ * rugosidad media de los intervalos que suenan juntos × (0.5 + 0.5·intensidad):
+ *   - curva: envolvente lenta → fases y color (la atmósfera general)
+ *   - forma: envolvente rápida → rotura del rostro (sigue a la música casi al instante)
  */
-export function analyzeTension(midi, { ataque = 1.5, relajacion = 5 } = {}) {
+export function analyzeTension(midi, fasesAuto = {}, rotura = {}) {
+  const { ataque = 1.5, relajacion = 5 } = fasesAuto;
   const notes = [];
   for (const track of midi.tracks) {
     if (track.channel === 9) continue;
@@ -110,7 +112,11 @@ export function analyzeTension(midi, { ataque = 1.5, relajacion = 5 } = {}) {
     vel[i] = maxV;
   }
   const raw = rough.map((r, i) => r * (0.5 + 0.5 * vel[i]));
-  return { step: STEP, curva: normalize(envelope(raw, ataque, relajacion)) };
+  return {
+    step: STEP,
+    curva: normalize(envelope(raw, ataque, relajacion)),
+    forma: normalize(envelope(raw, rotura.ataque ?? 0.2, rotura.relajacion ?? 1)),
+  };
 }
 
 /** Lee una curva de tensión en el tiempo t (interpolación lineal). */
@@ -123,13 +129,14 @@ export function sampleCurve(curve, step, t) {
 }
 
 /**
- * Carga los eventos. Devuelve { events, source, warnings[], tension, tempo }.
+ * Carga los eventos. Devuelve { events, source, warnings[], tension, tempo, notes }.
  * source: 'cues.json' | 'midi' | 'ninguno'
  */
 export async function loadCues(cfg) {
   const warnings = [];
   let tension = null;
   let tempo = null; // BPM (para la respiración)
+  let notes = []; // { t, p (altura MIDI), v (intensidad), dur } para los destellos
 
   // MIDI: fuente de tritonos y de la curva de tensión (fases automáticas)
   let midi = null;
@@ -138,8 +145,12 @@ export async function loadCues(cfg) {
   if (midiRes) {
     try {
       midi = new Midi(await midiRes.arrayBuffer());
-      tension = analyzeTension(midi, cfg.fasesAuto);
+      tension = analyzeTension(midi, cfg.fasesAuto, cfg.rotura);
       tempo = midi.header.tempos[0]?.bpm || null;
+      notes = midi.tracks
+        .filter((tr) => tr.channel !== 9)
+        .flatMap((tr) => tr.notes.map((n) => ({ t: n.time, p: n.midi, v: n.velocity, dur: n.duration })))
+        .sort((a, b) => a.t - b.t);
     } catch (err) {
       midiError = err;
     }
@@ -156,7 +167,7 @@ export async function loadCues(cfg) {
         .map((e) => ({ t: e.t, tipo: e.tipo || 'tritono' }))
         .sort((a, b) => a.t - b.t);
       if (midiError) warnings.push(`MIDI inválido (${midiError.message}). Fases en modo manual.`);
-      return { events, source: 'cues.json', warnings, tension, tempo };
+      return { events, source: 'cues.json', warnings, tension, tempo, notes };
     } catch (err) {
       warnings.push(`cues.json inválido (${err.message}); se intenta con el MIDI.`);
     }
@@ -165,7 +176,7 @@ export async function loadCues(cfg) {
   // 2) Detección automática en el .mid
   if (midiError) {
     warnings.push(`MIDI inválido (${midiError.message}). Sin pulsos de tritono.`);
-    return { events: [], source: 'ninguno', warnings, tension: null, tempo: null };
+    return { events: [], source: 'ninguno', warnings, tension: null, tempo: null, notes: [] };
   }
   if (midi) {
     const events = detectTritones(midi, {
@@ -173,14 +184,17 @@ export async function loadCues(cfg) {
       solapamientoMinimo: cfg.tritono.solapamientoMinimo,
     });
     if (events.length === 0) warnings.push('El MIDI no contiene tritonos.');
-    return { events, source: 'midi', warnings, tension, tempo };
+    return { events, source: 'midi', warnings, tension, tempo, notes };
   }
 
   warnings.push('No hay MIDI ni cues.json: la obra sigue sin pulsos de tritono.');
-  return { events: [], source: 'ninguno', warnings, tension: null, tempo: null };
+  return { events: [], source: 'ninguno', warnings, tension: null, tempo: null, notes: [] };
 }
 
-/** Recorre la lista en orden y avisa qué eventos se cruzaron en este frame. */
+/**
+ * Recorre una lista de eventos { t, … } en orden y avisa cuáles se cruzaron en este
+ * frame (se usa para los tritonos y para las notas).
+ */
 export class CueScheduler {
   constructor(events) {
     this.events = events;

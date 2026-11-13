@@ -41,6 +41,26 @@ body {
   transition: border-color 0.3s, color 0.3s;
 }
 
+#replay {
+  position: fixed;
+  left: 50%;
+  bottom: 14vh;
+  transform: translateX(-50%);
+  z-index: 15;
+  font: inherit;
+  font-size: 1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #555;
+  padding: 0.8rem 2.2rem;
+  cursor: pointer;
+  transition: opacity 1.5s, visibility 1.5s, border-color 0.3s;
+}
+
+#replay:hover,
+#replay:focus-visible,
 #start-btn:hover,
 #start-btn:focus-visible {
   border-color: #eee;

@@ -43,6 +43,8 @@ export class ParticleSystem {
     this.sizeMul = new Float32Array(n);
     this.twinkleRate = new Float32Array(n);
     this.halo = new Uint8Array(n); // 1 = se dibuja con halo
+    this.depth = new Float32Array(n).fill(0.5); // 0 = lejos · 1 = cerca de la cámara
+    this.lit = new Float32Array(n); // brillo extra por las notas (0–1+)
     this.bucket = new Uint16Array(n);
     this.order = new Uint16Array(n);
 
@@ -71,6 +73,11 @@ export class ParticleSystem {
     }
 
     this.lm = new Float32Array(NUM_LANDMARKS * 2); // landmarks proyectados a pantalla
+    this.lmz = new Float32Array(NUM_LANDMARKS).fill(0.5); // profundidad normalizada (1 = cerca)
+    this.faceTop = 0; // límites verticales del rostro en pantalla
+    this.faceBottom = this.h;
+    this.notes = []; // destellos activos { h, start, amp }
+    this.noteRange = { min: 36, max: 84 };
     this.faceWeight = 0; // 0 = libre, 1 = pegadas al rostro
     this.frame = null; // encuadre suavizado del rostro
     this.center = { x: this.w / 2, y: this.h / 2 };
@@ -126,10 +133,20 @@ export class ParticleSystem {
     const sx = this.w / 2 + (camX - 0.5) * this.w * follow;
     const sy = this.h / 2 + (cy - 0.5) * this.h * follow;
     const count = Math.min(NUM_LANDMARKS, landmarks.length);
+    let zMin = Infinity;
+    let zMax = -Infinity;
     for (let i = 0; i < count; i++) {
       this.lm[i * 2] = sx + (landmarks[i].x - cx) * vw * scale * mirror;
       this.lm[i * 2 + 1] = sy + (landmarks[i].y - cy) * vh * scale;
+      const z = landmarks[i].z;
+      if (z < zMin) zMin = z;
+      if (z > zMax) zMax = z;
     }
+    // z negativo = más cerca de la cámara
+    const zr = zMax - zMin || 1;
+    for (let i = 0; i < count; i++) this.lmz[i] = (zMax - landmarks[i].z) / zr;
+    this.faceTop = sy + (minY - cy) * vh * scale;
+    this.faceBottom = sy + (maxY - cy) * vh * scale;
     this.center.x = sx;
     this.center.y = sy;
     for (const [region, idx] of Object.entries(REGION_LANDMARKS)) {
@@ -143,6 +160,19 @@ export class ParticleSystem {
       this.regionCenter[region].y = ay / idx.length;
     }
     return true;
+  }
+
+  /** Rango de alturas de la pieza, para ubicar cada nota en el rostro. */
+  setNoteRange(notes) {
+    if (!notes.length) return;
+    this.noteRange.min = Math.min(...notes.map((n) => n.p));
+    this.noteRange.max = Math.max(...notes.map((n) => n.p));
+  }
+
+  /** Una nota empieza a sonar: enciende una franja del rostro según su altura. */
+  addNote(note, now) {
+    const { min, max } = this.noteRange;
+    this.notes.push({ h: (note.p - min) / (max - min || 1), start: now, amp: 0.4 + 0.6 * note.v });
   }
 
   /** Dispara el pulso de tritono: explosión radial + onda + destello. */
@@ -200,6 +230,23 @@ export class ParticleSystem {
     }
     this.pulse.env = env;
     this.pulse.flash = flash;
+    this.pulse.ringR = ringR;
+    this.pulse.cx = this.center.x;
+    this.pulse.cy = this.center.y;
+
+    // Destellos de notas activos
+    const N = cfg.notas;
+    this.notes = this.notes.filter((nt) => now - nt.start < N.duracion);
+    const active = this.notes.map((nt) => ({
+      h: nt.h,
+      a: nt.amp * N.intensidad * Math.pow(1 - (now - nt.start) / N.duracion, 2),
+    }));
+    const inv2w = 1 / (2 * N.anchoFranja * N.anchoFranja);
+    // Franja vertical: sobre el rostro si lo hay, si no sobre la pantalla
+    const top = fw > 0.5 ? this.faceTop : 0;
+    const bottom = fw > 0.5 ? this.faceBottom : this.h;
+    const span = bottom - top || 1;
+    const vib = N.vibracion;
 
     // Parámetros efectivos (fase × audio × cara/libre)
     const vol = audio.volume;
@@ -226,7 +273,7 @@ export class ParticleSystem {
     this.flowTime += params.velocidadRuido * energy * dt * 0.016;
     const ft = this.flowTime;
 
-    const { x, y, vx, vy, lm, edgeA, edgeB, u, ox, oy, seed, region } = this;
+    const { x, y, vx, vy, lm, lmz, edgeA, edgeB, u, ox, oy, seed, region, depth, lit } = this;
     const cx = this.center.x;
     const cy = this.center.y;
     const w = this.w;
@@ -241,10 +288,26 @@ export class ParticleSystem {
       const py = y[i];
       const s = seed[i];
 
+      // Brillo por notas: franja según la altura (graves abajo, agudos arriba)
+      let li = 0;
+      if (active.length) {
+        const hy = (bottom - py) / span;
+        for (let k = 0; k < active.length; k++) {
+          const dh = hy - active[k].h;
+          li += active[k].a * Math.exp(-dh * dh * inv2w);
+        }
+        if (li > 0.02 && vib > 0) {
+          ax += (Math.random() - 0.5) * li * vib * 2;
+          ay += (Math.random() - 0.5) * li * vib * 2;
+        }
+      }
+      lit[i] = li;
+
       if (attr > 0) {
         const a = edgeA[i] * 2;
         const b = edgeB[i] * 2;
         const t = u[i];
+        depth[i] = lmz[edgeA[i]] + (lmz[edgeB[i]] - lmz[edgeA[i]]) * t;
         let tx = lm[a] + (lm[b] - lm[a]) * t + ox[i];
         let ty = lm[a + 1] + (lm[b + 1] - lm[a + 1]) * t + oy[i];
         const r = region[i];
@@ -340,7 +403,7 @@ export class ParticleSystem {
     c.fillRect(0, 0, SPRITE, SPRITE);
   }
 
-  draw(ctx, params, audio, now, expr) {
+  draw(ctx, params, audio, now, expr, ambient) {
     const R = this.cfg.reactividad;
     const P = this.cfg.tritono;
     const PA = this.cfg.particulas;
@@ -351,6 +414,8 @@ export class ParticleSystem {
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = `rgba(0,0,0,${Math.min(1, params.estela + env * 0.15)})`;
     ctx.fillRect(0, 0, this.w, this.h);
+    // Polvo de fondo (detrás del rostro)
+    if (ambient) ambient.draw(ctx, params, audio);
 
     // Colores por lote: paleta interpolada + desplazamiento por frecuencia
     // + calidez de la sonrisa (sólo en la calma) + destello del tritono
@@ -394,6 +459,9 @@ export class ParticleSystem {
       (1 + expr.smile * S.tamanoCalma * calm * this.faceWeight);
     const tw = PA.titileo * 0.5;
     const twSpeed = PA.velocidadTitileo * TAU * now;
+    // Profundidad: más grandes las partículas cercanas a la cámara
+    const prof = this.cfg.profundidad.intensidad * this.faceWeight;
+    const depthSize = (i) => 1 + prof * (2 * this.depth[i] - 1);
     ctx.globalCompositeOperation = 'lighter';
     for (let b = 0; b < COLOR_BUCKETS; b++) {
       const from = counts[b];
@@ -406,7 +474,7 @@ export class ParticleSystem {
       for (let k = from; k < to; k++) {
         const i = this.order[k];
         if (this.halo[i]) continue;
-        const d = size * this.sizeMul[i];
+        const d = size * this.sizeMul[i] * depthSize(i);
         ctx.rect(this.x[i] - d / 2, this.y[i] - d / 2, d, d);
       }
       ctx.fill();
@@ -415,9 +483,18 @@ export class ParticleSystem {
       for (let k = from; k < to; k++) {
         const i = this.order[k];
         if (!this.halo[i]) continue;
-        const d = size * this.sizeMul[i] * PA.halo;
+        const d = size * this.sizeMul[i] * PA.halo * depthSize(i);
         ctx.globalAlpha =
           PA.opacidad * (1 - tw + tw * Math.sin(twSpeed * this.twinkleRate[i] + this.seed[i] * TAU));
+        ctx.drawImage(sprite, this.x[i] - d / 2, this.y[i] - d / 2, d, d);
+      }
+      // Destellos de notas: las partículas iluminadas ganan un halo brillante
+      for (let k = from; k < to; k++) {
+        const i = this.order[k];
+        const li = this.lit[i];
+        if (li < 0.06) continue;
+        const d = size * (1 + this.sizeMul[i]) * PA.halo * depthSize(i);
+        ctx.globalAlpha = Math.min(1, li * 0.8);
         ctx.drawImage(sprite, this.x[i] - d / 2, this.y[i] - d / 2, d, d);
       }
     }

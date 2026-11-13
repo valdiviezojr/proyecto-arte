@@ -43,12 +43,13 @@ La disonancia va desde que la curva supera `fasesAuto.umbral` hasta que vuelve a
 y dentro de ella la intensidad visual sube y baja con la música.
 Con la pieza actual: calma 0–14.5 s, disonancia 14.5–64.5 s, calma 64.5–79 s (se ve en el debug).
 
-El **color** sigue a la tensión directamente; la **forma** del rostro la sigue elevada a
-`exponenteForma` (2.5): con tensión media la cara se mantiene y sólo se rompe en los picos.
+El **color** sigue la curva lenta (la atmósfera de la sección). La **forma** sigue una curva
+rápida (`rotura`): el rostro se rompe mientras suenan los pasajes disonantes y se recompone
+~1 s después de que se resuelven.
 
-- El rostro se deforma demasiado / muy poco: sube / baja `exponenteForma`.
-- La disonancia reacciona muy rápido / muy lento: sube / baja `fasesAuto.ataque`.
-- Tarda mucho en calmarse tras un pico: baja `fasesAuto.relajacion`.
+- El rostro se rompe demasiado / muy poco: sube / baja `rotura.desde` y `rotura.hasta`.
+- Se rompe tarde / se recompone muy lento: baja `rotura.ataque` / `rotura.relajacion`.
+- El color cambia muy rápido / muy lento: sube / baja `fasesAuto.ataque` y `fasesAuto.relajacion`.
 - Disonancia más corta / más larga: sube / baja `fasesAuto.umbral`.
 - Para fijar los tiempos a mano: `modoFases: 'manual'` y edita `fases`.
 
@@ -66,6 +67,17 @@ El **color** sigue a la tensión directamente; la **forma** del rostro la sigue 
 Ajustes en `expresiones` y `respiracion` de `src/config.js`. Los más útiles:
 `sonrisa.sostenerForma` (cuánto sostiene la sonrisa), `sonrisa.minimo`/`maximo` (calibrar
 qué cuenta como sonrisa; mira el valor "sonrisa" en el debug), `respiracion.amplitud`.
+
+## Vida
+
+- **El rostro canta la pieza.** Cada nota del MIDI enciende una franja del rostro según su
+  altura: graves en la mandíbula, agudos en la frente (`notas`).
+- **Profundidad.** Las zonas cercanas a la cámara (nariz, pómulos) tienen partículas más
+  grandes, así el rostro tiene volumen (`profundidad.intensidad`).
+- **Polvo de fondo.** Partículas tenues alrededor que respiran con el volumen, se agitan en la
+  disonancia y las empuja la onda del tritono (`ambiente`; `cantidad: 0` lo desactiva).
+
+Al terminar la pieza aparece el botón **Repetir**.
 
 ## Ajustes (`src/config.js`)
 
@@ -97,6 +109,7 @@ src/
   midiCues.js       tritonos (cues.json o .mid) y curva de tensión del .mid
   phases.js         fases e interpolación de parámetros
   particles.js      física y dibujo de partículas (p5.js)
+  ambient.js        polvo de fondo
 scripts/
   setup-mediapipe.mjs      copia WASM + descarga modelo (postinstall)
   generate-test-audio.mjs  audio/MIDI de prueba

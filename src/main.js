@@ -6,6 +6,7 @@ import { AudioAnalyzer } from './audioAnalyzer.js';
 import { loadCues, CueScheduler } from './midiCues.js';
 import { Phases } from './phases.js';
 import { ParticleSystem } from './particles.js';
+import { AmbientDust } from './ambient.js';
 
 p5.disableFriendlyErrors = true; // mejor rendimiento
 
@@ -16,6 +17,7 @@ const startStatus = $('start-status');
 const hintEl = $('hint');
 const messagesEl = $('messages');
 const debugEl = $('debug');
+const replayBtn = $('replay');
 
 const state = {
   audio: null,
@@ -23,6 +25,8 @@ const state = {
   tracker: null,
   cues: { events: [], source: 'ninguno', warnings: [] },
   scheduler: null,
+  noteScheduler: null,
+  ambient: null,
   phases: new Phases(config),
   particles: null,
   debug: config.debugInicial,
@@ -76,6 +80,7 @@ startBtn.addEventListener('click', async () => {
   startStatus.textContent = 'Analizando tritonos…';
   state.cues = await loadCues(config);
   state.scheduler = new CueScheduler(state.cues.events);
+  state.noteScheduler = new CueScheduler(state.cues.notes);
   const avisoFases = state.phases.setTension(state.cues.tension);
   if (avisoFases) state.cues.warnings.push(avisoFases);
   for (const w of state.cues.warnings) {
@@ -87,11 +92,23 @@ startBtn.addEventListener('click', async () => {
   startEl.remove();
   new p5(sketch, $('stage'));
   if (state.audioOk) {
+    // Al terminar la pieza aparece el botón "Repetir"
+    state.audio.audio.addEventListener('ended', () => replayBtn.classList.remove('hidden'));
     state.audio.play().catch(() => {
       showError('El navegador bloqueó la reproducción: haz clic en la pantalla para iniciar el audio.');
       window.addEventListener('click', () => state.audio.play(), { once: true });
     });
   }
+});
+
+// ------------------------------------------------------------- Repetir ---
+replayBtn.addEventListener('click', () => {
+  replayBtn.classList.add('hidden');
+  replayBtn.blur();
+  state.audio.audio.currentTime = 0;
+  state.tritonesDisparados = 0;
+  state.audio.play();
+  // Los programadores de tritonos y notas detectan el salto atrás y vuelven al inicio
 });
 
 // -------------------------------------------------------------- Sketch ---
@@ -101,12 +118,15 @@ function sketch(p) {
     p.pixelDensity(1);
     p.background(0);
     state.particles = new ParticleSystem(config, p.width, p.height);
+    state.particles.setNoteRange(state.cues.notes);
+    state.ambient = new AmbientDust(config, p.width, p.height);
   };
 
   p.windowResized = () => {
     p.resizeCanvas(p.windowWidth, p.windowHeight);
     p.background(0);
     state.particles.resize(p.width, p.height);
+    state.ambient.resize(p.width, p.height);
   };
 
   p.draw = () => {
@@ -133,10 +153,12 @@ function sketch(p) {
       state.particles.triggerPulse(now);
       state.tritonesDisparados++;
     }
+    for (const note of state.noteScheduler.update(t)) state.particles.addNote(note, now);
 
     const t0 = performance.now();
     state.particles.update(params, audio, hasFace, now, dt, state.expr, breath);
-    state.particles.draw(p.drawingContext, params, audio, now, state.expr);
+    state.ambient.update(params, audio, state.particles.pulse, dt);
+    state.particles.draw(p.drawingContext, params, audio, now, state.expr, state.ambient);
     state.msParticulas = state.msParticulas * 0.9 + (performance.now() - t0) * 0.1;
 
     state.fps = state.fps * 0.9 + (1000 / Math.max(1, p.deltaTime)) * 0.1;

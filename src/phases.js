@@ -2,9 +2,9 @@
 //
 // Todo se reduce a un número: la cantidad de disonancia `d` (0 = calma, 1 = disonancia
 // máxima). Los parámetros se interpolan entre `tipos.calma` y `tipos.disonancia`:
-//   - color, tamaño, estela → siguen a `d` directamente (anuncian la tensión)
-//   - forma (atracción, dispersión, temblor, ruido…) → siguen a d^exponenteForma,
-//     así el rostro se mantiene con tensión media y sólo se rompe en los picos.
+//   - color, tamaño, estela → siguen la curva LENTA de tensión (la atmósfera)
+//   - forma (atracción, dispersión, temblor, ruido…) → sigue la curva RÁPIDA: el rostro
+//     se rompe mientras suenan los pasajes disonantes y se recompone cuando se resuelven.
 import { sampleCurve } from './midiCues.js';
 
 const smoothstep = (x) => {
@@ -34,7 +34,7 @@ export class Phases {
     this.current = null; // parámetros suavizados
     this.nombreFase = this.fases[0]?.nombre || '';
     this.mezclaDisonancia = 0; // d (color)
-    this.mezclaForma = 0; // d^exponenteForma
+    this.mezclaForma = 0; // cuánto se rompe el rostro
     this.tension = null; // curva del MIDI (modo auto)
     this.tensionActual = 0;
     this.modo = 'manual';
@@ -95,6 +95,14 @@ export class Phases {
     return mix;
   }
 
+  /** Cuánto se rompe el rostro (0–1) en el tiempo t. */
+  shapeAmount(t, d) {
+    if (!this.tension) return d; // modo manual: sigue a las fases
+    const { desde, hasta } = this.cfg.rotura;
+    const v = sampleCurve(this.tension.forma, this.tension.step, t);
+    return smoothstep((v - desde) / Math.max(0.001, hasta - desde));
+  }
+
   /**
    * Parámetros objetivo (sin suavizado temporal) para el tiempo t.
    * `sostener` (0–1): cuánto resiste la forma a la disonancia (la sonrisa sostiene la
@@ -102,7 +110,7 @@ export class Phases {
    */
   target(t, sostener = 0) {
     const d = this.amount(t);
-    const dForma = Math.pow(d, this.cfg.exponenteForma ?? 1) * (1 - sostener);
+    const dForma = this.shapeAmount(t, d) * (1 - sostener);
     const { calma, disonancia } = this;
     const p = { dis: d, disForma: dForma, paleta: [] };
     for (const k of SHAPE_KEYS) p[k] = calma[k] + (disonancia[k] - calma[k]) * dForma;

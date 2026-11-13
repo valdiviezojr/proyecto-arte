@@ -36,10 +36,15 @@ export const config = {
   ],
   // Duración (s) del cruce gradual entre fases. Empieza en el `inicio` de cada fase.
   duracionTransicion: 4,
-  // Resistencia del rostro: la FORMA (atracción, dispersión, temblor, ruido) sigue a la
-  // tensión elevada a este exponente; el COLOR la sigue directo.
-  // 1 = forma y color cambian igual · 2.5 = el rostro aguanta y sólo se rompe en los picos.
-  exponenteForma: 2.5,
+  // ROTURA DEL ROSTRO (modo auto): sigue a la disonancia de la música casi al instante.
+  // Se calcula aparte del color: el color marca la atmósfera, la forma se rompe sólo
+  // mientras suenan los pasajes disonantes.
+  rotura: {
+    ataque: 0.2, // s: qué tan rápido se rompe cuando entra la disonancia
+    relajacion: 1, // s: qué tan rápido se recompone cuando se resuelve
+    desde: 0.3, // 0–1: por debajo de esta tensión el rostro no se rompe nada
+    hasta: 0.7, // 0–1: desde esta tensión el rostro se rompe por completo
+  },
   // Suavizado extra por frame de los parámetros (0 = sin suavizar, 0.99 = muy lento).
   suavizadoParametros: 0.92,
 
@@ -88,6 +93,29 @@ export const config = {
     opacidad: 0.55, // opacidad base (se suman con brillo aditivo)
     titileo: 0.45, // 0 = brillo constante, 1 = titilan mucho
     velocidadTitileo: 1.2, // ciclos por segundo (aprox.)
+  },
+
+  // ------------------------------------------------------------ VIDA ---
+  // El rostro "canta" la pieza: cada nota del MIDI enciende una franja del rostro según
+  // su altura (graves en la mandíbula, agudos en la frente).
+  notas: {
+    intensidad: 0.9, // 0 = desactivado
+    duracion: 0.8, // s que tarda en apagarse cada destello
+    anchoFranja: 0.08, // alto de la franja iluminada (fracción del rostro)
+    vibracion: 0.5, // px: pequeño empujón de las partículas iluminadas
+  },
+  // Volumen: las zonas del rostro más cercanas a la cámara (nariz, pómulos) se ven más grandes.
+  profundidad: {
+    intensidad: 0.55, // 0 = rostro plano · 1 = mucho relieve
+  },
+  // Polvo de fondo: rodea al rostro, respira con el volumen y se agita en la disonancia.
+  ambiente: {
+    cantidad: 700, // 0 = desactivado
+    opacidad: 0.3,
+    tamano: 1.3, // px
+    velocidad: 0.25,
+    agitacionDisonancia: 4, // cuánto más rápido se mueve en la disonancia
+    reaccionVolumen: 1.5, // cuánto brilla con el volumen
   },
 
   // ------------------------------------------------------- EXPRESIONES ---
@@ -139,7 +167,8 @@ export const config = {
   // ------------------------------------------------------------ TRITONO ---
   tritono: {
     ventanaAntiDuplicados: 0.6, // s: como máximo un evento por ventana
-    solapamientoMinimo: 0.03, // s que deben sonar juntas las dos notas
+    // s que deben sonar juntas las dos notas. 0.1 ignora las notas de adorno (≈56 ms)
+    solapamientoMinimo: 0.1,
     intensidad: 14, // fuerza de la explosión (px/frame)
     duracion: 1.6, // s hasta que el pulso decae
     velocidadOnda: 900, // px/s del anillo expansivo
